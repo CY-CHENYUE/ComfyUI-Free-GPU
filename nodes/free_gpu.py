@@ -20,10 +20,13 @@ except ImportError:
 class FreeGPUMemory:
     """GPU内存释放节点"""
     
-    RETURN_TYPES = tuple()
+    RETURN_TYPES = ("STRING", )
+    RETURN_NAMES = ("status", )
     FUNCTION = "release_memory"
     CATEGORY = "Free-Gpu"
     OUTPUT_NODE = True
+    # 添加这个属性来标记节点会影响全局状态
+    GLOBAL_STATE_CHANGE = True
     
     @classmethod
     def INPUT_TYPES(cls):
@@ -80,23 +83,38 @@ class FreeGPUMemory:
             # 2. 卸载模型
             if purge_models:
                 print("\n[Memory Release] 卸载模型...")
-                # 先移动到CPU
-                device = comfy.model_management.get_torch_device()
-                if device.type == 'cuda':
-                    for obj in gc.get_objects():
-                        try:
-                            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                                if obj.device.type == 'cuda':
-                                    obj.data = obj.data.cpu()
-                                    if hasattr(obj, 'grad') and obj.grad is not None:
-                                        obj.grad.data = obj.grad.data.cpu()
-                        except:
-                            pass
-                
-                # 然后卸载模型
+                # 先卸载所有模型
                 if hasattr(comfy.model_management, 'unload_all_models'):
                     comfy.model_management.unload_all_models()
-                    time.sleep(0.5)
+                
+                # 强制清理所有模型相关的内存
+                for obj in gc.get_objects():
+                    try:
+                        if torch.is_tensor(obj):
+                            obj.storage().resize_(0)
+                            del obj
+                        elif hasattr(obj, 'data') and torch.is_tensor(obj.data):
+                            obj.data.storage().resize_(0)
+                            del obj.data
+                    except:
+                        pass
+                
+                # 重置模型管理器状态
+                comfy.model_management.current_loaded_models.clear()
+                if hasattr(comfy.model_management, 'vram_state'):
+                    comfy.model_management.vram_state = None
+                
+                # 清理模型缓存
+                if hasattr(comfy.model_management, 'model_cache'):
+                    comfy.model_management.model_cache.clear()
+                
+                # 强制执行垃圾回收
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                
+                time.sleep(0.5)
             
             # 3. 清理缓存
             if purge_cache:
@@ -149,10 +167,10 @@ class FreeGPUMemory:
                 print("1. 如果正在生成图片，建议等待完成后再释放")
                 print("2. 如果释放效果不理想，可以尝试重启 ComfyUI")
             
-            return tuple()
+            return ("Memory released successfully!", )
             
         except Exception as e:
             print(f"\n[Memory Release] 错误: {str(e)}")
             print(f"错误类型: {type(e)}")
             print(f"错误位置: {e.__traceback__.tb_frame.f_code.co_filename}:{e.__traceback__.tb_lineno}")
-            return tuple() 
+            return ("Memory release failed!", ) 
