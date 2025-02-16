@@ -83,10 +83,16 @@ class FreeGPUMemory:
             # 2. 卸载模型
             if purge_models:
                 print("\n[Memory Release] 卸载模型...")
+
+                # Save current model info so that auto load works later.
+                saved_models = {}
+                if hasattr(comfy.model_management, 'current_loaded_models'):
+                    saved_models = dict(comfy.model_management.current_loaded_models)
+
                 # 先卸载所有模型
                 if hasattr(comfy.model_management, 'unload_all_models'):
                     comfy.model_management.unload_all_models()
-                
+
                 # 强制清理所有模型相关的内存
                 for obj in gc.get_objects():
                     try:
@@ -98,22 +104,26 @@ class FreeGPUMemory:
                             del obj.data
                     except:
                         pass
-                
-                # 重置模型管理器状态
-                comfy.model_management.current_loaded_models.clear()
+
+                # 清空已加载模型的注册表，确保下次运行工作流时模型节点可以重新加载模型。
+                if hasattr(comfy.model_management, 'current_loaded_models'):
+                    comfy.model_management.current_loaded_models.clear()
+                    # 设置标识，通知后续节点必须重新加载模型
+                    comfy.model_management.models_need_reload = True
+
                 if hasattr(comfy.model_management, 'vram_state'):
                     comfy.model_management.vram_state = None
-                
+
                 # 清理模型缓存
                 if hasattr(comfy.model_management, 'model_cache'):
                     comfy.model_management.model_cache.clear()
-                
+
                 # 强制执行垃圾回收
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     torch.cuda.ipc_collect()
-                
+
                 time.sleep(0.5)
             
             # 3. 清理缓存
@@ -143,6 +153,10 @@ class FreeGPUMemory:
                     # 重置峰值统计
                     torch.cuda.reset_peak_memory_stats()
                     torch.cuda.reset_max_memory_allocated()
+                
+                # 同时设置标识，确保其他节点捕捉到模型需要重新加载
+                if hasattr(model_manager, 'models_need_reload'):
+                    model_manager.models_need_reload = True
             
             # 等待清理完成
             time.sleep(1)
@@ -166,8 +180,17 @@ class FreeGPUMemory:
                 print("\n[Memory Release] 提示:")
                 print("1. 如果正在生成图片，建议等待完成后再释放")
                 print("2. 如果释放效果不理想，可以尝试重启 ComfyUI")
-            
-            return ("Memory released successfully!", )
+
+            # 主动调用 /free 接口，通知系统刷新模型加载状态
+            try:
+                import requests
+                # 根据你的 ComfyUI 配置修改端口号，此处示例为8188
+                requests.post("http://127.0.0.1:8188/free", json={"free_memory": True, "unload_models": True})
+                print("[Memory Release] 成功调用 /free 接口，通知系统重置模型状态")
+            except Exception as e:
+                print(f"[Memory Release] 调用 /free 接口失败: {e}")
+
+            return (f"Memory released successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}!", )
             
         except Exception as e:
             print(f"\n[Memory Release] 错误: {str(e)}")
