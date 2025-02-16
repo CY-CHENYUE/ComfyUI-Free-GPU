@@ -196,13 +196,14 @@ class FreeGPUMemory:
                 logs.append("2. 如果释放效果不理想，可以尝试重启 ComfyUI")
 
             # 主动调用 /free 接口，通知系统刷新模型加载状态
-            try:
-                import requests
-                api_url = f"{protocol}://{api_host}:{api_port}/free"
-                requests.post(api_url, json={"free_memory": True, "unload_models": True})
-                logs.append("[Memory Release] 成功调用 /free 接口，通知系统重置模型状态")
-            except Exception as e:
-                logs.append(f"[Memory Release] 调用 /free 接口失败 ({protocol}://{api_host}:{api_port}): {e}")
+            if purge_models:  # 只在卸载模型时才调用free接口
+                try:
+                    import requests
+                    api_url = f"{protocol}://{api_host}:{api_port}/free"
+                    requests.post(api_url, json={"free_memory": True, "unload_models": True})
+                    logs.append("[Memory Release] 成功调用 /free 接口，通知系统重置模型状态")
+                except Exception as e:
+                    logs.append(f"[Memory Release] 调用 /free 接口失败 ({protocol}://{api_host}:{api_port}): {e}")
 
             # 将所有日志合并为一个字符串返回，以便前端显示
             result_str = "\n".join(logs)
