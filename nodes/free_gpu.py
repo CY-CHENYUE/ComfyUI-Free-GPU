@@ -35,6 +35,9 @@ class FreeGPUMemory:
                 "anything": ("STRING,IMAGE,LATENT,MODEL,VAE,CLIP,CONDITIONING", {}),
                 "purge_cache": ("BOOLEAN", {"default": True}),
                 "purge_models": ("BOOLEAN", {"default": True}),
+                "protocol": (["http", "https"], {"default": "http"}),
+                "api_host": ("STRING", {"default": "127.0.0.1"}),
+                "api_port": ("INT", {"default": 8188, "min": 1, "max": 65535}),
             }
         }
 
@@ -43,28 +46,41 @@ class FreeGPUMemory:
         process = psutil.Process()
         cpu_memory = process.memory_info().rss / 1024 / 1024
         
+        info_str = []
         if torch.cuda.is_available():
             gpu_allocated = torch.cuda.memory_allocated() / 1024 / 1024
             gpu_reserved = torch.cuda.memory_reserved() / 1024 / 1024
             total_memory = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
             
-            print(f"\n[Memory Release] 当前内存使用情况:")
-            print(f"- CPU 内存: {cpu_memory:.2f}MB")
-            print(f"- GPU 内存:")
-            print(f"  已分配: {gpu_allocated:.2f}MB")
-            print(f"  已预留: {gpu_reserved:.2f}MB")
-            print(f"  总容量: {total_memory:.2f}MB")
-            print(f"  使用率: {(gpu_allocated/total_memory*100):.1f}%")
+            info_str.append(f"\n[Memory Release] 当前内存使用情况:")
+            info_str.append(f"- CPU 内存: {cpu_memory:.2f}MB")
+            info_str.append(f"- GPU 内存:")
+            info_str.append(f"  已分配: {gpu_allocated:.2f}MB")
+            info_str.append(f"  已预留: {gpu_reserved:.2f}MB")
+            info_str.append(f"  总容量: {total_memory:.2f}MB")
+            info_str.append(f"  使用率: {(gpu_allocated/total_memory*100):.1f}%")
         
-        return cpu_memory, gpu_allocated if 'gpu_allocated' in locals() else 0, gpu_reserved if 'gpu_reserved' in locals() else 0
+        return (
+            cpu_memory, 
+            gpu_allocated if 'gpu_allocated' in locals() else 0, 
+            gpu_reserved if 'gpu_reserved' in locals() else 0,
+            "\n".join(info_str)
+        )
 
-    def release_memory(self, anything, purge_cache=True, purge_models=True):
+    def release_memory(self, anything, purge_cache=True, purge_models=True, protocol="http", api_host="127.0.0.1", api_port=8188):
         """执行内存释放操作"""
         try:
+            # 定义日志列表，并重载 print，在本函数内捕获所有打印信息
+            logs = []
+            def print(*args, **kwargs):
+                s = " ".join(str(arg) for arg in args)
+                logs.append(s)
+            
             print("\n[Memory Release] === 开始执行内存释放 ===")
             
             # 获取初始内存状态
-            cpu_before, gpu_allocated_before, gpu_reserved_before = self.get_memory_info()
+            cpu_before, gpu_allocated_before, gpu_reserved_before, info_str = self.get_memory_info()
+            logs.append(info_str)
             
             # 1. 使用cuda_malloc的功能
             if cuda_malloc is not None:
@@ -84,10 +100,7 @@ class FreeGPUMemory:
             if purge_models:
                 print("\n[Memory Release] 卸载模型...")
 
-                # Save current model info so that auto load works later.
-                saved_models = {}
-                if hasattr(comfy.model_management, 'current_loaded_models'):
-                    saved_models = dict(comfy.model_management.current_loaded_models)
+                # [提示] 本处不保存当前加载的模型信息，直接清空，以保证下次工作流模型节点能够重新加载
 
                 # 先卸载所有模型
                 if hasattr(comfy.model_management, 'unload_all_models'):
@@ -162,38 +175,40 @@ class FreeGPUMemory:
             time.sleep(1)
             
             # 获取释放后的内存状态
-            cpu_after, gpu_allocated_after, gpu_reserved_after = self.get_memory_info()
+            cpu_after, gpu_allocated_after, gpu_reserved_after, info_str = self.get_memory_info()
+            logs.append(info_str)
             
             # 计算释放量
             cpu_freed = cpu_before - cpu_after
             gpu_allocated_freed = gpu_allocated_before - gpu_allocated_after
             gpu_reserved_freed = gpu_reserved_before - gpu_reserved_after
             
-            print(f"\n[Memory Release] 释放效果:")
-            print(f"- CPU 释放: {cpu_freed:.2f}MB")
-            print(f"- GPU 已分配内存释放: {gpu_allocated_freed:.2f}MB")
-            print(f"- GPU 预留内存释放: {gpu_reserved_freed:.2f}MB")
+            logs.append(f"\n[Memory Release] 释放效果:")
+            logs.append(f"- CPU 释放: {cpu_freed:.2f}MB")
+            logs.append(f"- GPU 已分配内存释放: {gpu_allocated_freed:.2f}MB")
+            logs.append(f"- GPU 预留内存释放: {gpu_reserved_freed:.2f}MB")
             
             if gpu_allocated_freed > 0 or gpu_reserved_freed > 0:
-                print("\n[Memory Release] 释放成功!")
+                logs.append("\n[Memory Release] 释放成功!")
             else:
-                print("\n[Memory Release] 提示:")
-                print("1. 如果正在生成图片，建议等待完成后再释放")
-                print("2. 如果释放效果不理想，可以尝试重启 ComfyUI")
+                logs.append("\n[Memory Release] 提示:")
+                logs.append("1. 如果正在生成图片，建议等待完成后再释放")
+                logs.append("2. 如果释放效果不理想，可以尝试重启 ComfyUI")
 
             # 主动调用 /free 接口，通知系统刷新模型加载状态
             try:
                 import requests
-                # 根据你的 ComfyUI 配置修改端口号，此处示例为8188
-                requests.post("http://127.0.0.1:8188/free", json={"free_memory": True, "unload_models": True})
-                print("[Memory Release] 成功调用 /free 接口，通知系统重置模型状态")
+                api_url = f"{protocol}://{api_host}:{api_port}/free"
+                requests.post(api_url, json={"free_memory": True, "unload_models": True})
+                logs.append("[Memory Release] 成功调用 /free 接口，通知系统重置模型状态")
             except Exception as e:
-                print(f"[Memory Release] 调用 /free 接口失败: {e}")
+                logs.append(f"[Memory Release] 调用 /free 接口失败 ({protocol}://{api_host}:{api_port}): {e}")
 
-            return (f"Memory released successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}!", )
+            # 将所有日志合并为一个字符串返回，以便前端显示
+            result_str = "\n".join(logs)
+            return (result_str, )
             
         except Exception as e:
-            print(f"\n[Memory Release] 错误: {str(e)}")
-            print(f"错误类型: {type(e)}")
-            print(f"错误位置: {e.__traceback__.tb_frame.f_code.co_filename}:{e.__traceback__.tb_lineno}")
-            return ("Memory release failed!", ) 
+            err_str = f"\n[Memory Release] 错误: {str(e)}\n错误类型: {type(e)}\n错误位置: {e.__traceback__.tb_frame.f_code.co_filename}:{e.__traceback__.tb_lineno}"
+            logs.append(err_str)
+            return ("Memory release failed: " + err_str, ) 
