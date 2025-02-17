@@ -1,0 +1,15 @@
+[project]
+name = "free-gpu"
+description = "ComfyUI-Free-GPU provides a node for releasing RAM and VRAM in ComfyUI."
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["# 此节点使用的所有依赖都已包含在 ComfyUI 中"]
+
+[project.urls]
+Repository = "https://github.com/CY-CHENYUE/ComfyUI-Free-GPU"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-Free-GPU"
+Icon = ""
